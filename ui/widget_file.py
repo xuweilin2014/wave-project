@@ -5,13 +5,66 @@ import xlwt
 from PyQt5.Qt import *
 import sys
 import os
-from wave_gjy import *
+from wave import *
 from multiprocessing import Pool
 from collections import OrderedDict
 import atexit
 import logging
 import traceback
-import functools
+import warnings
+from matplotlib import rcParams
+import matplotlib.pyplot as plt
+import datetime
+from matplotlib.offsetbox import AnchoredText
+
+warnings.filterwarnings('ignore')
+rcParams['font.family'] = 'SimHei'
+
+
+# 日志类工厂，使用单例模式创建唯一的一个日志记录对象
+class LoggerFactory:
+
+    # 创建类属性 _instance_lock（整个类唯一）
+    _instance_lock = threading.Lock()
+
+    @classmethod
+    def instance(cls):
+        # 如果 _logger 对象已经创建，直接返回
+        if not hasattr(LoggerFactory, "_logger"):
+            # 加锁，防止线程 race condition
+            with LoggerFactory._instance_lock:
+                # 如果 _logger 对象已经创建，直接返回
+                if not hasattr(LoggerFactory, "_logger"):
+                    # 创建日志记录对象
+                    LoggerFactory._logger = logging.getLogger("wave-logger")
+                    cls._logging_configuration(LoggerFactory._logger)
+                return LoggerFactory._logger
+        return LoggerFactory._logger
+
+    @classmethod
+    def _logging_configuration(cls, _logger):
+        # 设置日志记录级别为 DEBUG
+        # 日志登记从小到达依次为：DEBUG、INFO、WARNING、ERROR、CRITICAL
+        _logger.setLevel(logging.DEBUG)
+
+        # 格式化本地时间
+        timestamp = time.strftime('%Y_%m_%d_%H_%M', time.localtime())
+        # 创建一个 handler 用于写入日志文件
+        file_handler = logging.FileHandler("../log/wave_" + timestamp + ".log")
+        file_handler.setLevel(logging.DEBUG)
+
+        # 创建一个 handler，用于输出到控制台
+        stream_handler = logging.StreamHandler()
+        stream_handler.setLevel(logging.DEBUG)
+
+        # 定义 handler 的输出格式
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        # 给 handler 添加 formatter
+        file_handler.setFormatter(formatter)
+        stream_handler.setFormatter(formatter)
+        # 给 logger 添加 handler
+        _logger.addHandler(stream_handler)
+        _logger.addHandler(file_handler)
 
 
 # noinspection PyAttributeOutsideInit
@@ -38,7 +91,6 @@ class Window(QWidget):
 
         # 保存进程池异步计算的结果
         self.async_result = None
-        self.counter = 0
 
         self.dir_path = ''
 
@@ -143,36 +195,50 @@ class Window(QWidget):
         self.save_line.setText(self.dir_path)
 
     def func(self):
-        # 将 file_names 中的属性依次分配给 cal_intensity0 方法执行，返回 MapResult 对象（继承了 AsyncResult）
-        self.async_result = self.process_pool.map_async(cal_intensity0, self.file_names)
-        # 阻塞等待所有进程的计算结果
-        # 如果远程调用发生异常，这个异常会通过 get() 重新抛出。这里抛出的异常会抛出，由 worker 统一捕获然后封装
-        results = self.async_result.get()
+        try:
+            # 将 file_names 中的属性依次分配给 cal_intensity0 方法执行，返回 MapResult 对象（继承了 AsyncResult）
+            self.async_result = self.process_pool.map_async(cal_intensity0, self.file_names)
+            # 阻塞等待所有进程的计算结果
+            # 如果远程调用发生异常，这个异常会通过 get() 重新抛出。这里抛出的异常会抛出，由 worker 统一捕获然后封装
+            results = self.async_result.get()
 
-        # 创建 excel 文件
-        workbook = xlwt.Workbook(encoding="ascii")
-        # 创建新的 sheet 表
-        sheet = workbook.add_sheet("地震烈度计算")
-        workbook_name = results[0]['name']
+            outputs = [res.output for res in results]
 
-        # 将 name、PGA、PGV、intensity、grade 信息保存到 excel 表中
-        for row, res in enumerate(results):
-            if row == 0:
+            # 创建 excel 文件
+            workbook = xlwt.Workbook(encoding="ascii")
+            # 创建新的 sheet 表
+            sheet = workbook.add_sheet("地震烈度计算")
+            workbook_name = outputs[0]['name']
+
+            # 将 name、PGA、PGV、intensity、grade 信息保存到 excel 表中
+            for row, res in enumerate(outputs):
+                if row == 0:
+                    for col, key in enumerate(res):
+                        sheet.write(row, col, key)
+                row += 1
                 for col, key in enumerate(res):
-                    sheet.write(row, col, key)
-            row += 1
-            for col, key in enumerate(res):
-                sheet.write(row, col, res[key])
+                    sheet.write(row, col, res[key])
 
-        # 将 excel 文件保存到 dir_path 路径下
-        path = os.path.join(self.save_line.text(), workbook_name + ".xls")
-        if os.path.exists(path):
-            path = os.path.join(self.save_line.text(), workbook_name + "(" + str(self.counter) + ")" + ".xls")
-            self.counter += 1
-        workbook.save(path)
+            # 将 excel 文件保存到 dir_path 路径下
+            data_dir_path = os.path.join(self.save_line.text(), workbook_name)
+            # 如果文件名重复使用当前时间戳生成 excel 文件
+            if os.path.exists(data_dir_path):
+                timestamp = time.strftime('%Y%m%d%H%M%S', time.localtime())
+                data_dir_path = os.path.join(self.save_line.text(), workbook_name + "(" + timestamp + ")")
+            os.mkdir(data_dir_path)
 
-        # 返回执行结果给 worker 类中的 result 变量
-        return True
+            workbook.save(os.path.join(data_dir_path, workbook_name + ".xls"))
+            self.logger.info(workbook_name + " excel 表格保存完毕")
+
+            for wave in results:
+                Plots.plot_triple(wave, data_dir_path)
+                self.logger.info(wave.name + " 时程图绘制完毕")
+
+            # 返回执行结果给 worker 类中的 result 变量
+            return True
+        except Exception:
+            self.logger.debug(traceback.format_exc())
+            QMessageBox.warning(self, '提示', "计算保存过程中出现错误，详情请查看日志", QMessageBox.Yes, QMessageBox.Yes)
 
     def cal_done_callback(self, *args):
         try:
@@ -190,15 +256,16 @@ class Window(QWidget):
                 self.logger.debug(trace_info)
 
             if flag:
-                QMessageBox.information(self, '提示', "计算成功完成", QMessageBox.Yes, QMessageBox.Yes)
                 self.logger.info(str(len(self.file_names)) + " 个任务执行完毕")
+                QMessageBox.information(self, '提示', "计算成功完成", QMessageBox.Yes, QMessageBox.Yes)
             else:
-                QMessageBox.warning(self, '提示', "计算失败，详情请查看日志", QMessageBox.Yes, QMessageBox.Yes)
                 self.logger.info(str(len(self.file_names)) + " 个任务执行过程中出现错误")
+                QMessageBox.warning(self, '提示', "计算失败，详情请查看日志", QMessageBox.Yes, QMessageBox.Yes)
 
             self.cal_btn.setEnabled(True)
         except BaseException:
             self.logger.debug(traceback.format_exc())
+            QMessageBox.warning(self, '提示', "系统出现故障，详情请查看日志", QMessageBox.Yes, QMessageBox.Yes)
 
     def cal_intensity_parallel(self):
         if len(self.dir_path) == 0 and len(self.file_names) == 0:
@@ -232,6 +299,7 @@ class Window(QWidget):
             self.thread_pool.start(worker)
         except Exception:
             self.logger.debug(traceback.format_exc())
+            QMessageBox.warning(self, '提示', "计算保存过程中出现错误，详情请查看日志", QMessageBox.Yes, QMessageBox.Yes)
 
     # 实现窗口的拖拽功能
     def mousePressEvent(self, evt):
@@ -284,20 +352,54 @@ class Window(QWidget):
 
 # 真正执行地震烈度计算程序
 def cal_intensity0(file_path):
-    wave = Wave()
-    wave.load_data(file_path, preprocess=True)
-    # 将返回的 PGA、PGV、intensity 和 grade 封装成一个有序字典
-    output = OrderedDict(wave.cal_ins_intensity())
-
     name = file_path[file_path.rfind('/') + 1: file_path.find('.')]
-    output['name'] = name
+    wave = Wave(name)
+    wave.load_data(file_path, preprocess=True)
+    wave.cal_ins_intensity()
+
+    # 将返回的 PGA、PGV、intensity 和 grade 封装成一个有序字典
+    wave.output = OrderedDict(wave.output)
+    wave.output['name'] = name
     # 将 name 键值对移动到第一个
-    output.move_to_end('name', last=False)
+    wave.output.move_to_end('name', last=False)
 
     logger = LoggerFactory.instance()
     logger.info(name + " 计算完毕")
 
-    return output
+    return wave
+
+
+class Plots:
+
+    # 绘制加速度时程图，
+    @staticmethod
+    def plot_triple(wave, data_dir_path):
+        trace_vector = wave.trace_vector
+        trace_name = wave.name
+        x_vector = trace_vector[0]
+
+        time_series = np.array([])
+        for i in range(len(x_vector.acc_data)):
+            time_series = np.r_[time_series, x_vector.start_time + i * datetime.timedelta(milliseconds=5)]
+
+        fig, axes = plt.subplots(3, 1, figsize=(40, 20))
+        fig.suptitle(trace_name + " 加速度时程图", fontweight='bold', fontsize=20, verticalalignment='baseline')
+
+        for i in range(len(axes)):
+            vector = trace_vector[i]
+            index = np.argmax(np.abs(vector.acc_data))
+            peak, peak_time = vector.acc_data[index], time_series[index]
+            peak_time = peak_time.strftime("%H:%M:%S.%f")[:-3]
+            peak = "%.6f" % peak
+
+            at = AnchoredText("Peak: " + peak + " g at " + peak_time, prop=dict(size=12, color=vector.color), frameon=True, loc='upper left')
+            at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
+            axes[i].add_artist(at)
+            axes[i].plot(time_series, vector.acc_data, label='acceleration', color=vector.color)
+            axes[i].legend()
+            axes[i].grid()
+
+        plt.savefig(os.path.join(data_dir_path, wave.name + ".png"))
 
 
 # 全局信号
@@ -353,52 +455,6 @@ class ThreadPoolExecutorPrint(QThreadPool):
         attrs = " ".join("{}={}".format(key, attr_dict[key]) for key in attr_dict)
         # 返回输出线程池状态
         return "<{}:{}>".format(self.__class__.__bases__[0].__name__, attrs)
-
-
-# 日志类工厂，使用单例模式创建唯一的一个日志记录对象
-class LoggerFactory:
-
-    # 创建类属性 _instance_lock（整个类唯一）
-    _instance_lock = threading.Lock()
-
-    @classmethod
-    def instance(cls):
-        # 如果 _logger 对象已经创建，直接返回
-        if not hasattr(LoggerFactory, "_logger"):
-            # 加锁，防止线程 race condition
-            with LoggerFactory._instance_lock:
-                # 如果 _logger 对象已经创建，直接返回
-                if not hasattr(LoggerFactory, "_logger"):
-                    # 创建日志记录对象
-                    LoggerFactory._logger = logging.getLogger("wave-logger")
-                    cls._logging_configuration(LoggerFactory._logger)
-                return LoggerFactory._logger
-        return LoggerFactory._logger
-
-    @classmethod
-    def _logging_configuration(cls, _logger):
-        # 设置日志记录级别为 DEBUG
-        # 日志登记从小到达依次为：DEBUG、INFO、WARNING、ERROR、CRITICAL
-        _logger.setLevel(logging.DEBUG)
-
-        # 格式化本地时间
-        timestamp = time.strftime('%Y_%m_%d_%H_%M', time.localtime())
-        # 创建一个 handler 用于写入日志文件
-        file_handler = logging.FileHandler("../log/wave_" + timestamp + ".log")
-        file_handler.setLevel(logging.DEBUG)
-
-        # 创建一个 handler，用于输出到控制台
-        stream_handler = logging.StreamHandler()
-        stream_handler.setLevel(logging.DEBUG)
-
-        # 定义 handler 的输出格式
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        # 给 handler 添加 formatter
-        file_handler.setFormatter(formatter)
-        stream_handler.setFormatter(formatter)
-        # 给 logger 添加 handler
-        _logger.addHandler(stream_handler)
-        _logger.addHandler(file_handler)
 
 
 if __name__ == '__main__':

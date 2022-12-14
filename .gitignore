@@ -3,7 +3,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+./wave_venv
 # C extensions
 *.so
 
@@ -137,4 +137,8 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+./.idea
+./models/**
+./output
 

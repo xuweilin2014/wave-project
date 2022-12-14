@@ -1,31 +1,33 @@
 # This is a sample Python script.
 import logging
-import math
 
+import numpy as np
+import obspy.signal
 import obspy.signal.detrend
 import scipy.integrate
-# Press Shift+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
 from obspy import read
-import numpy as np
-import datetime
-import matplotlib.pyplot as plt
-from scipy import signal
-import obspy.signal
 from obspy.signal.filter import bandpass
-from obspy.signal.differentiate_and_integrate import integrate_cumtrapz
+from scipy import signal
 
 COLORS = ['red', 'blue', 'green']
+GRAVITY = 9.79865
 
 
 class Wave:
+
+    ACCS = ['XOHNE, g', 'YOHNN, g', 'ZOHNZ, g']
+
     """
     地震波数据
     """
-    def __init__(self):
+    def __init__(self, name):
         self.trace_vector = np.array([])
         self.PGA = 0
         self.PGV = 0
+        self.ins_intensity = 0
+        self.intensity_grade = 0
+        self.output = {}
+        self.name = name
 
     """
     从 data_path 指明的 msd 文件中读取地震波形数据，一个 msd 地震波形数据对应 3 个分量，
@@ -50,14 +52,7 @@ class Wave:
                 start_time = msd.traces[i].meta.starttime.datetime
                 end_time = msd.traces[i].meta.endtime.datetime
 
-                if data_counter == 0:
-                    acc_id = 'x_acc'
-                elif data_counter == 1:
-                    acc_id = 'y_acc'
-                elif data_counter == 2:
-                    acc_id = 'z_acc'
-
-                trace = TraceData(acc_id, acc, sample_rate, start_time, end_time, COLORS[data_counter])
+                trace = TraceData(Wave.ACCS[data_counter], acc, sample_rate, start_time, end_time, COLORS[data_counter])
 
                 if preprocess:
                     trace.preprocess_data()
@@ -70,14 +65,9 @@ class Wave:
     """
     按照 GB/T17742—2020 计算 PGA 参数
     """
-    def acc_vector_sum(self, plot=False):
+    def acc_vector_sum(self):
         trace_vector = self.trace_vector
         acc_vector_sum = np.zeros((len(trace_vector[0].acc_data)))
-
-        for _ in range(len(self.trace_vector)):
-            self.trace_vector[_].print_acc_max()
-            if plot:
-                self.trace_vector[_].plot_accform()
 
         for i in range(len(trace_vector[0].acc_data)):
             x_acc = np.power(trace_vector[0].acc_data[i], 2)
@@ -92,15 +82,13 @@ class Wave:
     """
     按照 GB/T17742—2020 计算 PGV 参数
     """
-    def vel_vector_sum(self, plot=False):
+    def vel_vector_sum(self):
         # 先对加速度数据进行积分
         trace_vector = self.trace_vector
         integrals = np.array([])
+
         for _ in range(len(trace_vector)):
             integrals = np.append(integrals, trace_vector[_].integrate_acc())
-            trace_vector[_].print_vel_max()
-            if plot:
-                trace_vector[_].plot_velform()
 
         integrals = integrals.reshape((len(trace_vector), len(trace_vector[0].acc_data)))
         vel_vector_sum = np.zeros((len(trace_vector[0].acc_data)))
@@ -117,12 +105,13 @@ class Wave:
     """
     根据 PGA 参数和 PGV 参数来计算最终的地震烈度 I 
     """
-    def cal_intensity(self):
-        gravity = 9.79865
-        PGA = self.acc_vector_sum(plot=False) * gravity
-        PGV = self.vel_vector_sum(plot=False) * gravity
+    def cal_ins_intensity(self):
 
-        print('PGA: %.5f g, PGV: %.5f g' % (self.PGA, self.PGV))
+        PGA = self.acc_vector_sum() * GRAVITY
+        PGV = self.vel_vector_sum() * GRAVITY
+
+        self.output['PGA'] = PGA * 100
+        self.output['PGV'] = PGV * 100
 
         Ia = 3.17 * np.log10(PGA) + 6.59
         Iv = 3.0 * np.log10(PGV) + 9.77
@@ -131,9 +120,10 @@ class Wave:
             intensity = Iv
         else:
             intensity = (Ia + Iv) / 2
-        intensity = min(max(intensity, 1.0), 12.0)
+        ins_intensity = min(max(intensity, 1.0), 12.0)
 
-        return intensity
+        self.output['intensity'] = ins_intensity
+        self.output['grade'] = round(ins_intensity)
 
 
 class TraceData:
@@ -167,7 +157,7 @@ class TraceData:
     def preprocess_data(self):
         # 1.使用高通滤波进行基线校正
         # （使用 scipy 中的趋势消除函数来进行基线校正）
-        self.acc_data = obspy.signal.detrend.polynomial(self.acc_data, order=3, plot=True)
+        self.acc_data = obspy.signal.detrend.polynomial(self.acc_data, order=3, plot=False)
         # 2.使用带通滤波来进行滤除噪音，平滑数据
         self.acc_data = bandpass(self.acc_data, 0.1, 10, 200, corners=4, zerophase=False)
 
@@ -179,38 +169,11 @@ class TraceData:
     def integrate_acc(self):
         for i in range(len(self.acc_data)):
             self.vel_data = np.append(self.vel_data, [scipy.integrate.trapz(self.acc_data[: i + 1], dx=0.005)])
-        # self.vel_data = integrate_cumtrapz(self.acc_data, 0.005)
         return self.vel_data
 
     def print_acc_max(self):
-        print(self.acc_id + ': ' + str(np.max(np.abs(self.acc_data))))
+        return self.acc_id[0] + '方向加速度最大值为: ' + str(np.max(np.abs(self.acc_data)) * GRAVITY * 100)[0:6] + ' gal\n'
 
     def print_vel_max(self):
-        print(self.acc_id + ': ' + str(np.max(np.abs(self.vel_data))))
+        return self.acc_id[0] + '方向速度最大值为: ' + str(np.max(np.abs(self.vel_data)) * GRAVITY * 100)[0:6] + ' cm/s\n'
 
-    def plot_accform(self):
-        data_len = len(self.acc_data)
-        x = np.linspace(1, data_len, data_len, dtype=int)
-        plt.figure(figsize=(40, 5), dpi=300)
-        plt.title(self.acc_id)
-        plt.plot(x, self.acc_data, label='acceleration', color=self.color)
-        plt.legend()
-        plt.grid()
-        plt.show()
-
-    def plot_velform(self):
-        data_len = len(self.vel_data)
-        x = np.linspace(1, data_len, data_len, dtype=int)
-        plt.figure(figsize=(40, 5), dpi=300)
-        plt.title(self.acc_id)
-        plt.plot(x, self.vel_data, label='velocity', color=self.color)
-        plt.legend()
-        plt.grid()
-        plt.show()
-
-
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    wave = Wave()
-    wave.load_data("./models/226.msd", preprocess=True)
-    print(wave.cal_intensity())
