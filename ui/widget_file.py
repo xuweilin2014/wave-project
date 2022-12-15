@@ -1,3 +1,4 @@
+import functools
 import threading
 import time
 
@@ -18,7 +19,6 @@ import datetime
 from matplotlib.offsetbox import AnchoredText
 
 warnings.filterwarnings('ignore')
-rcParams['font.family'] = 'SimHei'
 
 
 # 日志类工厂，使用单例模式创建唯一的一个日志记录对象
@@ -133,10 +133,12 @@ class Window(QWidget):
         self.cal_btn.clicked.connect(self.cal_intensity_parallel)
 
         self.file_display_text = QTextEdit(widget)
+        self.file_display_text.setStyleSheet("font-family:Microsoft Yahei;")
         self.file_display_text.setPlaceholderText("msd 文件路径")
         self.file_display_text.setFocusPolicy(Qt.NoFocus)
 
         self.save_line = QLineEdit(widget)
+        self.save_line.setStyleSheet("font-family:Microsoft Yahei;")
         self.save_line.setPlaceholderText("保存文件夹路径")
         self.save_line.textEdited.connect(self.change_text)
         self.tool_btn = QToolButton(widget)
@@ -170,75 +172,78 @@ class Window(QWidget):
                           self.save_line.y() + self.save_line.height() + margin_between)
 
     def fetch_file(self):
-        self.file_names = np.array([])
-        # 实例化 QFileDialog
-        tmp_tuple = QFileDialog().getOpenFileNames(self, "选择 msd 文件", os.getcwd(), "MSD Files (*.msd)")[0]
-        filenames = np.array(list(tmp_tuple))
-        self.file_names = np.r_[self.file_names, filenames]
+        try:
+            self.file_names = np.array([])
+            # 实例化 QFileDialog
+            tmp_tuple = QFileDialog().getOpenFileNames(self, "选择 msd 文件", os.getcwd(), "MSD Files (*.msd)")[0]
+            filenames = np.array(list(tmp_tuple))
+            self.file_names = np.r_[self.file_names, filenames]
 
-        self.file_display_text.clear()
-        for name in filenames:
-            # 列表中的第一个元素即是文件路径，以只读的方式打开文件
-            f = open(name, 'r')
+            self.file_display_text.clear()
+            for name in filenames:
+                # 列表中的第一个元素即是文件路径，以只读的方式打开文件
+                f = open(name, 'r')
 
-            with f:
-                # 接受读取的内容，并显示到多行文本框中
-                data = f.name
-                self.file_display_text.insertPlainText(data + '\n')
+                with f:
+                    # 接受读取的内容，并显示到多行文本框中
+                    data = f.name
+                    self.file_display_text.insertPlainText(data + '\n')
 
-        self.file_display_text.setFocusPolicy(Qt.NoFocus)
+            self.file_display_text.setFocusPolicy(Qt.NoFocus)
+        except Exception:
+            QMessageBox.warning(self, '提示', "选取 msd 文件窗口出现错误，详情请查看日志", QMessageBox.Yes, QMessageBox.Yes)
+            self.logger.debug(traceback.format_exc())
 
     def save_file_dir(self):
-        # 返回用户选中的【已经存在的】文件夹路径
-        self.dir_path = QFileDialog.getExistingDirectory(self, "选取文件夹", os.getcwd())
-        self.save_line.clear()
-        self.save_line.setText(self.dir_path)
+        try:
+            # 返回用户选中的【已经存在的】文件夹路径
+            self.dir_path = QFileDialog.getExistingDirectory(self, "选取文件夹", os.getcwd())
+            self.save_line.clear()
+            self.save_line.setText(self.dir_path)
+        except Exception:
+            QMessageBox.warning(self, '提示', "选取保存文件夹窗口出现错误，详情请查看日志", QMessageBox.Yes, QMessageBox.Yes)
+            self.logger.debug(traceback.format_exc())
 
     def func(self):
-        try:
-            # 将 file_names 中的属性依次分配给 cal_intensity0 方法执行，返回 MapResult 对象（继承了 AsyncResult）
-            self.async_result = self.process_pool.map_async(cal_intensity0, self.file_names)
-            # 阻塞等待所有进程的计算结果
-            # 如果远程调用发生异常，这个异常会通过 get() 重新抛出。这里抛出的异常会抛出，由 worker 统一捕获然后封装
-            results = self.async_result.get()
+        # 将 file_names 中的属性依次分配给 cal_intensity0 方法执行，返回 MapResult 对象（继承了 AsyncResult）
+        self.async_result = self.process_pool.map_async(cal_intensity0, self.file_names)
+        # 阻塞等待所有进程的计算结果
+        # 如果远程调用发生异常，这个异常会通过 get() 重新抛出。这里抛出的异常会抛出，由 worker 统一捕获然后封装
+        results = self.async_result.get()
+        outputs = [res.output for res in results]
 
-            outputs = [res.output for res in results]
+        # 创建 excel 文件
+        workbook = xlwt.Workbook(encoding="ascii")
+        # 创建新的 sheet 表
+        sheet = workbook.add_sheet("地震烈度计算")
+        workbook_name = outputs[0]['name']
 
-            # 创建 excel 文件
-            workbook = xlwt.Workbook(encoding="ascii")
-            # 创建新的 sheet 表
-            sheet = workbook.add_sheet("地震烈度计算")
-            workbook_name = outputs[0]['name']
-
-            # 将 name、PGA、PGV、intensity、grade 信息保存到 excel 表中
-            for row, res in enumerate(outputs):
-                if row == 0:
-                    for col, key in enumerate(res):
-                        sheet.write(row, col, key)
-                row += 1
+        # 将 name、PGA、PGV、intensity、grade 信息保存到 excel 表中
+        for row, res in enumerate(outputs):
+            if row == 0:
                 for col, key in enumerate(res):
-                    sheet.write(row, col, res[key])
+                    sheet.write(row, col, key)
+            row += 1
+            for col, key in enumerate(res):
+                sheet.write(row, col, res[key])
 
-            # 将 excel 文件保存到 dir_path 路径下
-            data_dir_path = os.path.join(self.save_line.text(), workbook_name)
-            # 如果文件名重复使用当前时间戳生成 excel 文件
-            if os.path.exists(data_dir_path):
-                timestamp = time.strftime('%Y%m%d%H%M%S', time.localtime())
-                data_dir_path = os.path.join(self.save_line.text(), workbook_name + "(" + timestamp + ")")
-            os.mkdir(data_dir_path)
+        # 将 excel 文件保存到 dir_path 路径下
+        data_dir_path = os.path.join(self.save_line.text(), workbook_name)
+        # 如果文件名重复使用当前时间戳生成 excel 文件
+        if os.path.exists(data_dir_path):
+            timestamp = time.strftime('%Y%m%d%H%M%S', time.localtime())
+            data_dir_path = os.path.join(self.save_line.text(), workbook_name + "(" + timestamp + ")")
+        os.mkdir(data_dir_path)
 
-            workbook.save(os.path.join(data_dir_path, workbook_name + ".xls"))
-            self.logger.info(workbook_name + " excel 表格保存完毕")
+        workbook.save(os.path.join(data_dir_path, workbook_name + ".xls"))
+        self.logger.info(workbook_name + " excel 表格保存完毕")
 
-            for wave in results:
-                Plots.plot_triple(wave, data_dir_path)
-                self.logger.info(wave.name + " 时程图绘制完毕")
+        # 使用进程池执行绘制加速度时程图的任务
+        plot_wrap = functools.partial(plot0, data_dir_path=data_dir_path)
+        self.process_pool.map_async(plot_wrap, results).get()
 
-            # 返回执行结果给 worker 类中的 result 变量
-            return True
-        except Exception:
-            self.logger.debug(traceback.format_exc())
-            QMessageBox.warning(self, '提示', "计算保存过程中出现错误，详情请查看日志", QMessageBox.Yes, QMessageBox.Yes)
+        # 返回执行结果给 worker 类中的 result 变量
+        return True
 
     def cal_done_callback(self, *args):
         try:
@@ -262,6 +267,7 @@ class Window(QWidget):
                 self.logger.info(str(len(self.file_names)) + " 个任务执行过程中出现错误")
                 QMessageBox.warning(self, '提示', "计算失败，详情请查看日志", QMessageBox.Yes, QMessageBox.Yes)
 
+            # 不管计算过程是否成功，都重新启用计算按钮
             self.cal_btn.setEnabled(True)
         except BaseException:
             self.logger.debug(traceback.format_exc())
@@ -299,7 +305,7 @@ class Window(QWidget):
             self.thread_pool.start(worker)
         except Exception:
             self.logger.debug(traceback.format_exc())
-            QMessageBox.warning(self, '提示', "计算保存过程中出现错误，详情请查看日志", QMessageBox.Yes, QMessageBox.Yes)
+            QMessageBox.warning(self, '提示', "计算/保存过程中出现错误，详情请查看日志", QMessageBox.Yes, QMessageBox.Yes)
 
     # 实现窗口的拖拽功能
     def mousePressEvent(self, evt):
@@ -369,6 +375,12 @@ def cal_intensity0(file_path):
     return wave
 
 
+def plot0(wave, data_dir_path):
+    logger = LoggerFactory.instance()
+    Plots.plot_triple(wave, data_dir_path)
+    logger.info(wave.name + " 加速度时程图绘制完毕")
+
+
 class Plots:
 
     # 绘制加速度时程图，
@@ -396,6 +408,7 @@ class Plots:
             at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
             axes[i].add_artist(at)
             axes[i].plot(time_series, vector.acc_data, label='acceleration', color=vector.color)
+            axes[i].set_title(vector.acc_id, fontsize=15)
             axes[i].legend()
             axes[i].grid()
 
