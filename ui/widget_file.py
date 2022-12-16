@@ -1,22 +1,22 @@
+import atexit
+import datetime
 import functools
+import logging
+import os
+import sys
 import threading
 import time
-
-import xlwt
-from PyQt5.Qt import *
-import sys
-import os
-from wave import *
-from multiprocessing import Pool
-from collections import OrderedDict
-import atexit
-import logging
 import traceback
 import warnings
-from matplotlib import rcParams
+from collections import OrderedDict
+from multiprocessing import Pool
+
 import matplotlib.pyplot as plt
-import datetime
+import xlwt
+from PyQt5.Qt import *
 from matplotlib.offsetbox import AnchoredText
+
+from wave import *
 
 warnings.filterwarnings('ignore')
 
@@ -48,9 +48,14 @@ class LoggerFactory:
         _logger.setLevel(logging.DEBUG)
 
         # 格式化本地时间
-        timestamp = time.strftime('%Y_%m_%d_%H_%M', time.localtime())
+        timestamp = time.strftime('%Y%m%d%H%M', time.localtime())
+
+        # 检测日志文件夹路径是否存在
+        log_dir_path = os.path.join("../", "wave_log")
+        if not os.path.exists(log_dir_path):
+            os.mkdir(log_dir_path)
         # 创建一个 handler 用于写入日志文件
-        file_handler = logging.FileHandler("../log/wave_" + timestamp + ".log")
+        file_handler = logging.FileHandler(os.path.join(log_dir_path, "wave_" + timestamp + ".log"))
         file_handler.setLevel(logging.DEBUG)
 
         # 创建一个 handler，用于输出到控制台
@@ -80,7 +85,6 @@ class Window(QWidget):
         # 创建进程池，进程池的进程数设置为 cpu 核心数的二分之一
         self.process_pool = Pool(os.cpu_count() // 2)
         self.logger.info("进程池创建完毕: " + str(self.process_pool))
-        # 设置线程池的大小为 2
         # 使用重写的线程池，控制打印输出线程池状态
         self.thread_pool = ThreadPoolExecutorPrint()
         # 设置线程池中的最大线程数
@@ -229,7 +233,7 @@ class Window(QWidget):
 
         # 将 excel 文件保存到 dir_path 路径下
         data_dir_path = os.path.join(self.save_line.text(), workbook_name)
-        # 如果文件名重复使用当前时间戳生成 excel 文件
+        # 如果文件名重复使用当前时间戳生成 excel 文件夹
         if os.path.exists(data_dir_path):
             timestamp = time.strftime('%Y%m%d%H%M%S', time.localtime())
             data_dir_path = os.path.join(self.save_line.text(), workbook_name + "(" + timestamp + ")")
@@ -239,6 +243,7 @@ class Window(QWidget):
         self.logger.info(workbook_name + " excel 表格保存完毕")
 
         # 使用进程池执行绘制加速度时程图的任务
+        # 由于进程池中的执行函数只能接收一个参数，使用偏函数固定另外一个参数
         plot_wrap = functools.partial(plot0, data_dir_path=data_dir_path)
         self.process_pool.map_async(plot_wrap, results).get()
 
