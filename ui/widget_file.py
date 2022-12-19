@@ -3,14 +3,15 @@ import datetime
 import functools
 import logging
 import os
+import random
 import sys
 import threading
 import time
 import traceback
 import warnings
 from collections import OrderedDict
-from multiprocessing import Pool
-
+from logging.handlers import QueueHandler
+from multiprocessing import Pool, Queue, Manager
 import matplotlib.pyplot as plt
 import xlwt
 from PyQt5.Qt import *
@@ -19,6 +20,12 @@ from matplotlib.offsetbox import AnchoredText
 from wave import *
 
 warnings.filterwarnings('ignore')
+# 设置字体
+plt.rcParams["font.sans-serif"] = ["SimHei"]
+# 该语句解决图像中的“-”负号的乱码问题
+plt.rcParams["axes.unicode_minus"] = False
+
+WAVE_LOGGER = 'wave-logger'
 
 
 # 日志类工厂，使用单例模式创建唯一的一个日志记录对象
@@ -26,23 +33,25 @@ class LoggerFactory:
 
     # 创建类属性 _instance_lock（整个类唯一）
     _instance_lock = threading.Lock()
+    _logger = None
 
     @classmethod
     def instance(cls):
         # 如果 _logger 对象已经创建，直接返回
-        if not hasattr(LoggerFactory, "_logger"):
+        if not cls._logger:
             # 加锁，防止线程 race condition
-            with LoggerFactory._instance_lock:
+            with cls._instance_lock:
                 # 如果 _logger 对象已经创建，直接返回
-                if not hasattr(LoggerFactory, "_logger"):
+                if not cls._logger:
                     # 创建日志记录对象
-                    LoggerFactory._logger = logging.getLogger("wave-logger")
+                    cls._logger = logging.getLogger(WAVE_LOGGER)
                     cls._logging_configuration(LoggerFactory._logger)
-                return LoggerFactory._logger
-        return LoggerFactory._logger
+                return cls._logger
+        return cls._logger
 
     @classmethod
     def _logging_configuration(cls, _logger):
+        _logger._my_id = random.random()
         # 设置日志记录级别为 DEBUG
         # 日志登记从小到达依次为：DEBUG、INFO、WARNING、ERROR、CRITICAL
         _logger.setLevel(logging.DEBUG)
@@ -63,7 +72,7 @@ class LoggerFactory:
         stream_handler.setLevel(logging.DEBUG)
 
         # 定义 handler 的输出格式
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(process)d - %(message)s')
         # 给 handler 添加 formatter
         file_handler.setFormatter(formatter)
         stream_handler.setFormatter(formatter)
@@ -76,14 +85,21 @@ class LoggerFactory:
 class Window(QWidget):
     def __init__(self):
         super().__init__()
-        # 保存用户选取的 msd 文件名称
-        self.file_names = np.array([])
-        self.logger = LoggerFactory.instance()
-
-        self.show_logo()
 
         # 创建进程池，进程池的进程数设置为 cpu 核心数的二分之一
         self.process_pool = Pool(os.cpu_count() // 2)
+
+        self.queue = Manager().Queue()
+        self.logger = logging.getLogger(WAVE_LOGGER)
+        self.logger.setLevel(logging.DEBUG)
+        # 设置 QueueHandler，并且传入 Manager().Queue()，当使用 logger 记录日志时，日志记录会被保存到 queue 队列中
+        self.logger.addHandler(QueueHandler(self.queue))
+        # 单独使用一个日志进程 logger_listener_process，从 queue 队列依次读取出日志记录，然后真正写入到日志文件和控制台中
+        self.process_pool.apply_async(logger_listener_process, args=(self.queue,))
+
+        # 保存用户选取的 msd 文件名称
+        self.file_names = np.array([])
+        self.show_logo()
         self.logger.info("进程池创建完毕: " + str(self.process_pool))
         # 使用重写的线程池，控制打印输出线程池状态
         self.thread_pool = ThreadPoolExecutorPrint()
@@ -95,7 +111,6 @@ class Window(QWidget):
 
         # 保存进程池异步计算的结果
         self.async_result = None
-
         self.dir_path = ''
 
         # 程序正常/异常终止时，都会调用 destroy 方法
@@ -209,8 +224,9 @@ class Window(QWidget):
             self.logger.debug(traceback.format_exc())
 
     def func(self):
+        cal_intensity0_wrap = functools.partial(cal_intensity0, queue=self.queue)
         # 将 file_names 中的属性依次分配给 cal_intensity0 方法执行，返回 MapResult 对象（继承了 AsyncResult）
-        self.async_result = self.process_pool.map_async(cal_intensity0, self.file_names)
+        self.async_result = self.process_pool.map_async(cal_intensity0_wrap, self.file_names)
         # 阻塞等待所有进程的计算结果
         # 如果远程调用发生异常，这个异常会通过 get() 重新抛出。这里抛出的异常会抛出，由 worker 统一捕获然后封装
         results = self.async_result.get()
@@ -244,7 +260,7 @@ class Window(QWidget):
 
         # 使用进程池执行绘制加速度时程图的任务
         # 由于进程池中的执行函数只能接收一个参数，使用偏函数固定另外一个参数
-        plot_wrap = functools.partial(plot0, data_dir_path=data_dir_path)
+        plot_wrap = functools.partial(plot0, data_dir_path=data_dir_path, queue=self.queue)
         self.process_pool.map_async(plot_wrap, results).get()
 
         # 返回执行结果给 worker 类中的 result 变量
@@ -353,17 +369,28 @@ class Window(QWidget):
                 self.logger.debug(traceback.format_exc())
 
         # 最终调用 _terminate_pool 函数，终止 _handle_results 线程、_task_handler 线程、_work_handler 线程以及进程，最后清除队列中的数据
-        self.process_pool.terminate()
         self.logger.info("销毁进程池：" + str(self.process_pool))
+        self.process_pool.terminate()
 
         # 阻塞 2s 等待 QThreadPool 线程池执行完毕
-        self.thread_pool.waitForDone(2000)
         self.logger.info("销毁线程池：" + str(self.thread_pool))
+        self.thread_pool.waitForDone(2000)
+
+
+# 其它进程中所有的日志记录都会保存到 queue 队列中，而 logger_listener_process 进程单独从 queue 中取出日志记录
+# 依次输出到控制台和日志文件
+def logger_listener_process(queue):
+    logger = LoggerFactory.instance()
+
+    while True:
+        message = queue.get()
+        logger.handle(message)
 
 
 # 真正执行地震烈度计算程序
-def cal_intensity0(file_path):
-    name = file_path[file_path.rfind('/') + 1: file_path.find('.')]
+# 多进程程序，每一个进程拥有独立的地址空间，因此必须使用多进程通信
+def cal_intensity0(file_path, queue):
+    name = file_path[file_path.rfind('/') + 1: file_path.rfind('.')]
     wave = Wave(name)
     wave.load_data(file_path, preprocess=True)
     wave.cal_ins_intensity()
@@ -374,14 +401,26 @@ def cal_intensity0(file_path):
     # 将 name 键值对移动到第一个
     wave.output.move_to_end('name', last=False)
 
-    logger = LoggerFactory.instance()
+    logger = logging.getLogger(WAVE_LOGGER)
+
+    # 非常关键，如果不进行判断直接添加到 logger 中会使得日志重复打印多次
+    if not logger.handlers:
+        logger.addHandler(QueueHandler(queue))
+        logger.setLevel(logging.DEBUG)
+
     logger.info(name + " 计算完毕")
 
     return wave
 
 
-def plot0(wave, data_dir_path):
-    logger = LoggerFactory.instance()
+def plot0(wave, data_dir_path, queue):
+
+    logger = logging.getLogger(WAVE_LOGGER)
+
+    if not logger.handlers:
+        logger.addHandler(QueueHandler(queue))
+        logger.setLevel(logging.DEBUG)
+
     Plots.plot_triple(wave, data_dir_path)
     logger.info(wave.name + " 加速度时程图绘制完毕")
 
