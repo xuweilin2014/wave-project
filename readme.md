@@ -4,6 +4,7 @@
 《GB/T 17742-2020》给出的计算流程（如下所示），计算出最终的地震烈度。
 
 !['pipeline'](https://user-images.githubusercontent.com/15026221/209750237-958e8ee4-fb71-4dd1-a032-25656c9714e9.png)
+<div align=center><img style="width: 703px;height: 250px" src="https://user-images.githubusercontent.com/15026221/209750237-958e8ee4-fb71-4dd1-a032-25656c9714e9.png"/></div>
 
 并且为了方便程序的使用，编写了一个简单的图形界面，点击选取文件按钮，选取所要计算的 msd 文件路径和保存的文件夹
 路径。
