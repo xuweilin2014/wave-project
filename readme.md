@@ -8,7 +8,7 @@
 并且为了方便程序的使用，编写了一个简单的图形界面，点击选取文件按钮，选取所要计算的 msd 文件路径和保存的文件夹
 路径。
 
-<div align=center><img src="https://user-images.githubusercontent.com/15026221/209750246-1af85d02-7eb7-416c-b267-f14ab5e9d36f.png"/></div>
+<div align=center style="width: 70%;height: 70%"><img src="https://user-images.githubusercontent.com/15026221/209750246-1af85d02-7eb7-416c-b267-f14ab5e9d36f.png"/></div>
 
 然后点击生成烈度文件按钮，开始进行计算，为了加快处理，使用了并行计算，最终生成烈度数据（包括图片和 Excel 文件），如下所示：
 
