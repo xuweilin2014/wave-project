@@ -1,7 +1,7 @@
 import atexit
 import datetime
 import functools
-import logging
+import multiprocessing
 import os
 import random
 import sys
@@ -11,10 +11,13 @@ import traceback
 import warnings
 from collections import OrderedDict
 from logging.handlers import QueueHandler
-from multiprocessing import Pool, Queue, Manager
+from multiprocessing import Pool, Manager
+
 import matplotlib.pyplot as plt
 import xlwt
-from PyQt5.Qt import *
+from PyQt5.Qt import QWidget, QFileDialog, QMessageBox, QApplication, QPushButton, QObject, pyqtSignal, QRunnable, \
+    QLineEdit, QTextEdit, QSize, QIcon, QToolButton, pyqtSlot, QThreadPool
+from PyQt5.QtCore import Qt
 from matplotlib.offsetbox import AnchoredText
 
 from wave import *
@@ -60,7 +63,7 @@ class LoggerFactory:
         timestamp = time.strftime('%Y%m%d%H%M', time.localtime())
 
         # 检测日志文件夹路径是否存在
-        log_dir_path = os.path.join("../", "wave_log")
+        log_dir_path = os.path.join(os.getcwd(), "wave_log")
         if not os.path.exists(log_dir_path):
             os.mkdir(log_dir_path)
         # 创建一个 handler 用于写入日志文件
@@ -120,7 +123,7 @@ class Window(QWidget):
         self.logger.info("窗口创建完毕")
 
     def show_logo(self):
-        with open("../wave-logo.txt", "r") as f:
+        with open("wave-logo.txt", "r") as f:
             lines = f.readlines()
             for line in lines:
                 if line.find('Arthuor') != -1:
@@ -137,7 +140,7 @@ class Window(QWidget):
         # 设定顶层窗口的标题，以及设置为固定大小
         self.setWindowTitle("地震烈度计算器")
         self.setFixedSize(600, 400)
-        self.setWindowIcon(QIcon("../static/netty.png"))
+        self.setWindowIcon(QIcon("static/netty.png"))
 
         self.file_widget = QWidget(self)
         widget = self.file_widget
@@ -168,7 +171,7 @@ class Window(QWidget):
         self.save_line.resize(500, 30)
         self.tool_btn.resize(30, 30)
 
-        self.tool_btn.setIcon(QIcon("../static/dir.png"))
+        self.tool_btn.setIcon(QIcon("static/dir.png"))
         self.tool_btn.setAutoRaise(True)
         self.tool_btn.setIconSize(QSize(20, 20))
         self.tool_btn.clicked.connect(self.save_file_dir)
@@ -515,6 +518,8 @@ class ThreadPoolExecutorPrint(QThreadPool):
 
 
 if __name__ == '__main__':
+    multiprocessing.freeze_support()
+    
     app = QApplication(sys.argv)
 
     win = Window()

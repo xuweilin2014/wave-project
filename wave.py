@@ -2,12 +2,12 @@
 import logging
 
 import numpy as np
-import obspy.signal
-import obspy.signal.detrend
-import scipy.integrate
+from scipy.integrate import trapz
 from obspy import read
 from obspy.signal.filter import bandpass
+from obspy.signal.detrend import polynomial
 from scipy import signal
+from matplotlib.backends import backend_tkagg
 
 COLORS = ['red', 'blue', 'green']
 GRAVITY = 9.79865
@@ -157,7 +157,7 @@ class TraceData:
     def preprocess_data(self):
         # 1.使用高通滤波进行基线校正
         # （使用 scipy 中的趋势消除函数来进行基线校正）
-        self.acc_data = obspy.signal.detrend.polynomial(self.acc_data, order=3, plot=False)
+        self.acc_data = polynomial(self.acc_data, order=3, plot=False)
         # 2.使用带通滤波来进行滤除噪音，平滑数据
         self.acc_data = bandpass(self.acc_data, 0.1, 10, 200, corners=4, zerophase=False)
 
@@ -168,7 +168,7 @@ class TraceData:
     """
     def integrate_acc(self):
         for i in range(len(self.acc_data)):
-            self.vel_data = np.append(self.vel_data, [scipy.integrate.trapz(self.acc_data[: i + 1], dx=0.005)])
+            self.vel_data = np.append(self.vel_data, [trapz(self.acc_data[: i + 1], dx=0.005)])
         return self.vel_data
 
     def print_acc_max(self):
