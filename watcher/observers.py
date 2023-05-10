@@ -13,9 +13,15 @@ assert sys.platform.startswith("win"), f"{__name__} requires Windows"
 DEFAULT_OBSERVER_TIMEOUT = 1  # in seconds.
 
 """
-EventEmitter 和 Observer 是一个简单的生产者和消费者关系，EventEmitter 和 Observer 各为一个单独的线程，
-EventEmitter 为生产者，循环监控路径下文件/目录的变化，生成事件对象放入到 event_queue 中，
-Observer 为一个消费者，从 event_queue 中获取事件对象，分发给 event_handler 进行事件处理
+EventEmitter 和 Observer 是一个简单的生产者和消费者关系，对于每一个 watch，开启一个 EventEmitter 线程循环监控路径下文件/目录的变化，
+所有的 EventEmitter 线程都把产生的事件 event 和 watch 封装成一个对象，然后保存到【同一个】事件队列中，Observer 为另外一个单独的线程。
+Observer 从 event_queue 中获取对象，根据对象中的 watch，分发给一个或者多个 event_handler 进行事件处理。在此设计模式中，watch 是纽带，
+EventEmitter 和 watch 一一对应，然后一个 watch 对应于多个 event_handler
+
+                    |------> event_handler
+EventEmitter ---> watch ---> event_handler
+                    |------> event_handler
+                    
 """
 
 
@@ -153,6 +159,8 @@ class BaseObserver(EventDispatcher):
             self._add_handler_for_watch(event_handler, watch)
 
             # If we don't have an emitter for this watch already, create it.
+            # 检查此 watch 是否有对应的 EventEmitter 线程来进行监控
+            # 每一个 watch 都需要开启一个 EventEmitter 线程来监控
             if self._emitter_for_watch.get(watch) is None:
                 emitter = self._emitter_class(event_queue=self.event_queue, watch=watch, timeout=self.timeout)
                 # 如果 Observer 线程仍然在运行，那么开启 EventEmitter 线程循环监控目录下文件的变化
