@@ -1,15 +1,11 @@
 import os
-import queue
 import re
 import threading
-import time
 import traceback
-from re import Pattern
 from datetime import datetime, timedelta
+from re import Pattern
+
 from watcher.bricks import ObservedWatch
-from watcher.observers import BaseObserver, WindowsApiObserver
-from watcher.events import FileEventHandler
-from file_handler import MSDFileEventHandler
 
 
 class FileContext:
@@ -25,7 +21,7 @@ class FileContext:
     def verify_file(self):
         return True
 
-    def compare_context(self, other):
+    def compare_key(self, key):
         raise NotImplemented("NotImplementedError: Please rewrite FileContext.compare_context()")
 
     @classmethod
@@ -85,14 +81,14 @@ class FileContextMSD(FileContext):
             print(traceback.format_exc())
             return False
 
-    def compare_context(self, other):
-        if not isinstance(other, FileContextMSD):
-            raise TypeError("the comparison type must be FileContextMSD")
+    def compare_key(self, other_key: datetime):
+        if not isinstance(other_key, datetime):
+            raise TypeError("the comparison type must be datetime")
 
         # 大于 other 的时间戳，返回 > 0
         # 小于 other 的时间戳，返回 < 0
         # 等于 other 的时间戳，返回 = 0
-        return (self._time_stamp - other.time_stamp).total_seconds()
+        return (self._time_stamp - other_key).total_seconds()
 
     @classmethod
     def new_file_context(cls, absolute_path):
@@ -116,37 +112,79 @@ class FileContextMSD(FileContext):
         return self._time_stamp.strftime('%Y-%m-%d %H:%M:%S')
 
 
-# 使用双向链表 + dict 实现文件在内存中的缓存
-class FileCacheManager(threading.Thread):
+class FileCache:
 
-    def __init__(self, context_cls: FileContext.__class__, watch: ObservedWatch, event_queue: queue.Queue):
-        super(FileCacheManager, self).__init__()
+    def __init__(self, context_cls: FileContext.__class__, watch: ObservedWatch):
+        self._context_cls = context_cls
+        self._watch = watch
+
+    def init_cache(self):
+        # 用于初始构建文件缓存
+        raise NotImplemented("NotImplementedError: Please rewrite FileCache._build_cache()")
+
+    def clear_cache(self):
+        # 用于清除文件缓存
+        raise NotImplemented("NotImplementedError: Please rewrite FileCache._build_cache()")
+
+    def insert(self, file_context):
+        # 用于向文件缓存中插入元素
+        raise NotImplemented("NotImplementedError: Please rewrite FileCache.insert()")
+
+    def delete(self, file_context):
+        # 从文件缓存中删除元素
+        raise NotImplemented("NotImplementedError: Please rewrite FileCache.delete()")
+
+    def replace(self, old_file_context, new_file_context):
+        # 从文件缓存中替换旧元素为新元素
+        raise NotImplemented("NotImplementedError: Please rewrite FileCache.replace()")
+
+    def query_by_path(self, file_path=None, regex=False, re_pattern: Pattern = None):
+        # 根据文件路径和正则表达式从文件缓存中查询
+        raise NotImplemented("NotImplementedError: Please rewrite FileCache.query_by_path()")
+
+    def query_by_key_range(self, from_key, to_key):
+        # 根据子类自定义的 key 范围，从文件缓存中查找
+        raise NotImplemented("NotImplementedError: Please rewrite FileCache.query_by_key_range()")
+
+
+# 使用双向链表 + dict 实现文件在内存中的缓存
+class FileCacheLinkedList(FileCache):
+
+    def __init__(self, context_cls: FileContext.__class__, watch: ObservedWatch):
+        super(FileCacheLinkedList, self).__init__(context_cls, watch)
         # 使用可重入锁来进行并发控制
         self._lock = threading.RLock()
-        self._context_cls = context_cls
         # kv_store 主要用来存储 K-V 缓存项，另外 V 为 Node 类型，也就是能通过 key 快速找到 Node 节点
         # 快速定位到该 Node 节点在双链表中的位置，而不用遍历双链表来找该 Node 节点
         self._kv_store = dict()
-        self._watch = watch
         # head 和 tail 均指向哑结点 dummy node
         # context_cls 表示 FileContext 的子类
         self._head = context_cls('', '')
         self._tail = context_cls('', '')
         self._head.next = self._tail
         self._tail.prev = self._head
-        # 遍历被监控目录下的文件，建立双向链表，双向链表主要用来维护 Node 结点顺序
-        self._build_cache()
 
-        # 创建文件事件处理器
-        self._queue = event_queue
+    def init_cache(self):
+        with self._lock:
+            for root, _, filenames in os.walk(self._watch.path):
+                for file_name in filenames:
+                    # 拼接获取到文件的绝对路径
+                    file_context = self._context_cls.new_file_context(os.path.join(root, file_name))
+                    # 将此 file_context 结点保存到双向链表中（依据时间戳进行排序）
+                    self.insert(file_context)
 
-    def _build_cache(self):
-        for root, _, filenames in os.walk(self._watch.path):
-            for file_name in filenames:
-                # 拼接获取到文件的绝对路径
-                file_context = self._context_cls.new_file_context(os.path.join(root, file_name))
-                # 将此 file_context 结点保存到双向链表中（依据时间戳进行排序）
-                self.insert(file_context)
+    def clear_cache(self):
+        with self._lock:
+            ptr = self._head.next
+            while ptr is not self._tail:
+                # 将 ptr 指向的 FileContext 结点从双向链表中删除，并且删除 _kv_store 中对应的 kv 映射
+                self.delete(ptr)
+                # for gc
+                self._head.next = None
+                self._tail.prev = None
+
+    def _is_empty(self):
+        return self._head.next is None
 
     def _kv_store_push_item(self, file_context):
         with self._lock:
@@ -161,19 +199,22 @@ class FileCacheManager(threading.Thread):
     def insert(self, file_context):
         # 类型和参数合法性检查
         if file_context is None:
-            print("FileCache.insert: file_context should not be None.")
-            return
+            raise ValueError("FileCache.insert: file_context should not be None.")
         if not isinstance(file_context, FileContext):
             raise TypeError(
-                f"FileCache.insert: type of file_context should be FileContext, but is {type(file_context)}")
+                f"FileCache.insert: type of file_context should be FileContext, but is {type(file_context)}"
+            )
 
         with self._lock:
+            # 判断缓存是否被清空
+            if self._is_empty():
+                return
             # 可能同时会有多个线程同时访问 FileCache 这个数据结构，因此需要加锁并发控制
             # 根据 file_context 中的 key 属性进行插入排序
             prev = self._head
             ptr = self._head.next
             while ptr is not self._tail:
-                if file_context.compare_context(ptr) < 0:
+                if file_context.compare_key(ptr.key) < 0:
                     break
                 prev = ptr
                 ptr = ptr.next
@@ -189,17 +230,20 @@ class FileCacheManager(threading.Thread):
     def delete(self, file_context):
         # 类型和参数合法性检查
         if file_context is None:
-            print("FileCache.insert: file_context should not be None.")
-            return
+            raise ValueError("FileCache.insert: file_context should not be None.")
         if not isinstance(file_context, FileContext):
             raise TypeError(f"FileCache.insert: type of file_context should be FileContext, but is {type(file_context)}")
 
         with self._lock:
+            # 判断缓存是否被清空
+            if self._is_empty():
+                return
             # 将 file_context 结点从双向链表中删除
             ptr = file_context
             ptr.prev.next = ptr.next
             ptr.next.prev = ptr.prev
 
+            # for gc
             ptr.next = None
             ptr.prev = None
 
@@ -215,6 +259,9 @@ class FileCacheManager(threading.Thread):
 
         # 在双向链表中，将 old_file_context 结点替换成 new_file_context
         with self._lock:
+            # 判断缓存是否被清空
+            if self._is_empty():
+                return
             ptr = self._head.next
             while ptr is not self._tail:
                 # 找到 old_file_context
@@ -229,10 +276,11 @@ class FileCacheManager(threading.Thread):
                     ptr.prev.next = new_file_context
                     ptr.next.prev = new_file_context
 
+                    # for gc
                     ptr.next = None
                     ptr.prev = None
 
-    def query_by_path(self, file_path=None, regex=False, re_pattern: Pattern = None):
+    def query_by_path(self, file_path=None, regex=False, re_pattern: Pattern = None) -> list:
         # 遍历双向链表，找到文件的绝对路径等于 file_path 的 Node 结点，如果没有找到则返回 None
         # 参数 file_path 必须为绝对路径，否则抛出异常
         if not os.path.isabs(file_path):
@@ -241,42 +289,56 @@ class FileCacheManager(threading.Thread):
             raise ValueError(f"FileCache.query_by_path: arg re_pattern should not be None.")
 
         while self._lock:
+            res = list()
+            # 判断缓存是否被清空
+            if self._is_empty():
+                return res
             ptr = self._head.next
             while ptr is not self._tail:
                 if regex:
                     # 如果开启了正则匹配，那么使用正则表达式来匹配文件的绝对路径
                     # windows 文件系统即使文件路径为 case insensitive，所以忽略大小写的区别
                     if re_pattern.match(ptr.absolute_path, re.IGNORECASE):
-                        yield ptr
+                        res.append(ptr)
                 else:
                     # 如果没有开启正则匹配，那么使用完全匹配，路径必须完全相等
                     if ptr.absolute_path == file_path:
-                        yield ptr
+                        res.append(ptr)
                 ptr = ptr.next
 
-    def query_by_key_range(self, from_key):
-        # 根据 from_key 到双向链表中查找 >= key 的所有元素，包装在一个列表中返回，没有找到则返回空列表
+            return res
+
+    def query_by_key_range(self, from_key, to_key=None) -> list:
+        if from_key is None and to_key is None:
+            raise ValueError("FileCacheLinkedList.query_by_key_range: from_key and to_key cannot be None at the same time.")
+
+        # 到双向链表中查找 from_key <= Node <= to_key 的所有元素，包装在一个列表中返回，没有找到则返回空列表
         with self._lock:
+            res = list()
+            # 判断缓存是否被清空
+            if self._is_empty():
+                return res
+            # 如果 from_key 为 None，则说明要查找 <= to_key 的所有元素
+            if from_key is None:
+                ptr = self._head.next
             # 如果 from_key 在 kv_store 中，那么就可以直接获取到 node 结点，开始遍历
-            if from_key in self._kv_store:
+            elif from_key in self._kv_store:
                 ptr = self._kv_store[from_key]
             # 否则，需要从头开始遍历，找到 >= from_key 的 node 结点
             else:
                 ptr = self._head.next
                 while ptr is not self._tail:
-                    if from_key <= ptr.key:
+                    if ptr.compare_key(from_key) >= 0:
                         break
                     ptr = ptr.next
 
             while ptr is not self._tail:
-                yield ptr
+                if to_key is not None and ptr.compare_key(to_key) > 0:
+                    break
+                res.append(ptr)
                 ptr = ptr.next
 
-    def run(self) -> None:
-        # todo 继承 BaseThread，可以暂停线程
-        while True:
-            self._file_event_handler.fetch()
-            time.sleep(0.5)
+            return res
 
     def __str__(self):
         ptr = self._head.next
@@ -285,10 +347,4 @@ class FileCacheManager(threading.Thread):
             info.append(ptr.file_rpath + '\n')
             ptr = ptr.next
         return ''.join(info)
-
-
-if __name__ == '__main__':
-    observer = WindowsApiObserver()
-    file_handler = MSDFileEventHandler()
-    cache = FileCacheManager(FileContextMSD, ObservedWatch('C:/Users/许纬林/Desktop/win32test/', True), )
 
