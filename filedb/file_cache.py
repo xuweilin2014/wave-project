@@ -175,16 +175,12 @@ class FileCacheLinkedList(FileCache):
 
     def clear_cache(self):
         with self._lock:
+            # 清空缓存，将缓存设置为只有 head，tail 两个结点的状态
             ptr = self._head.next
             while ptr is not self._tail:
                 # 将 ptr 指向的 FileContext 结点从双向链表中删除，并且删除 _kv_store 中对应的 kv 映射
                 self.delete(ptr)
-                # for gc
-                self._head.next = None
-                self._tail.prev = None
-
-    def _is_empty(self):
-        return self._head.next is None
+                ptr = ptr.next
 
     def _kv_store_push_item(self, file_context):
         with self._lock:
@@ -206,9 +202,6 @@ class FileCacheLinkedList(FileCache):
             )
 
         with self._lock:
-            # 判断缓存是否被清空
-            if self._is_empty():
-                return
             # 可能同时会有多个线程同时访问 FileCache 这个数据结构，因此需要加锁并发控制
             # 根据 file_context 中的 key 属性进行插入排序
             prev = self._head
@@ -235,9 +228,6 @@ class FileCacheLinkedList(FileCache):
             raise TypeError(f"FileCache.insert: type of file_context should be FileContext, but is {type(file_context)}")
 
         with self._lock:
-            # 判断缓存是否被清空
-            if self._is_empty():
-                return
             # 将 file_context 结点从双向链表中删除
             ptr = file_context
             ptr.prev.next = ptr.next
@@ -259,9 +249,6 @@ class FileCacheLinkedList(FileCache):
 
         # 在双向链表中，将 old_file_context 结点替换成 new_file_context
         with self._lock:
-            # 判断缓存是否被清空
-            if self._is_empty():
-                return
             ptr = self._head.next
             while ptr is not self._tail:
                 # 找到 old_file_context
@@ -290,9 +277,6 @@ class FileCacheLinkedList(FileCache):
 
         while self._lock:
             res = list()
-            # 判断缓存是否被清空
-            if self._is_empty():
-                return res
             ptr = self._head.next
             while ptr is not self._tail:
                 if regex:
@@ -315,9 +299,6 @@ class FileCacheLinkedList(FileCache):
         # 到双向链表中查找 from_key <= Node <= to_key 的所有元素，包装在一个列表中返回，没有找到则返回空列表
         with self._lock:
             res = list()
-            # 判断缓存是否被清空
-            if self._is_empty():
-                return res
             # 如果 from_key 为 None，则说明要查找 <= to_key 的所有元素
             if from_key is None:
                 ptr = self._head.next
