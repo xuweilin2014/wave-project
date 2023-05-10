@@ -20,6 +20,10 @@ from .directory_winapi import close_directory_handle, get_directory_handle, read
 DEFAULT_EMITTER_TIMEOUT = 1  # in seconds.
 WATCHDOG_TRAVERSE_MOVED_DIR_DELAY = 1  # seconds
 
+OP_DIR_CREATED = 1
+OP_DIR_MOVED = 2
+OP_DIR_REMOVED = 3
+
 
 # Observer classes
 class EventEmitter(BaseThread):
@@ -66,6 +70,8 @@ class WindowsApiEmitter(EventEmitter):
         super().__init__(event_queue, watch, timeout)
         self._lock = threading.Lock()
         self._handle = None
+        self.dir_table = []
+        self._dir_table_init()
 
     def on_thread_start(self):
         # 调用 CreateFileW 获取被监控文件夹的句柄
@@ -85,6 +91,22 @@ class WindowsApiEmitter(EventEmitter):
     def _read_events(self):
         return read_events(self._handle, self.watch.path, self.watch.is_recursive)
 
+    def _dir_table_init(self):
+        for root, directories, _ in os.walk(self.watch.path):
+            for directory in directories:
+                self.dir_table.append(os.path.join(root, directory))
+
+    def _dir_table_operation(self, action, old_dir_path, new_dir_path=None):
+        if action == OP_DIR_CREATED:
+            self.dir_table.append(old_dir_path)
+        elif action == OP_DIR_MOVED:
+            if old_dir_path in self.dir_table:
+                self.dir_table.remove(old_dir_path)
+                self.dir_table.append(new_dir_path)
+        elif action == OP_DIR_REMOVED:
+            if old_dir_path in self.dir_table:
+                self.dir_table.remove(old_dir_path)
+
     def queue_events(self, timeout):
         # 调用 _read_events 获取文件/目录变化事件对象 WinAPINativeEvent
         winapi_events = self._read_events()
@@ -101,6 +123,7 @@ class WindowsApiEmitter(EventEmitter):
                     dest_path = src_path
                     src_path = last_renamed_src_path
                     if os.path.isdir(dest_path):
+                        self._dir_table_operation(OP_DIR_MOVED, src_path, dest_path)
                         # 子目录移动事件
                         event = DirMovedEvent(src_path, dest_path)
                         if self.watch.is_recursive:
@@ -128,6 +151,7 @@ class WindowsApiEmitter(EventEmitter):
                     cls = DirCreatedEvent if isdir else FileCreatedEvent
                     self.queue_event(cls(src_path))
                     if isdir and self.watch.is_recursive:
+                        self._dir_table_operation(OP_DIR_CREATED, src_path)
                         # If a directory is moved from outside the watched folder to inside it,
                         # we only get a created directory event out of it, not any events for its children
                         # so use the same hack as for file moves to get the child events
@@ -140,8 +164,13 @@ class WindowsApiEmitter(EventEmitter):
                 # 文件/目录删除事件
                 # FileDeletedEvent
                 elif winapi_event.is_removed:
-                    self.queue_event(FileDeletedEvent(src_path))
-                # 被监控目录删除事件
+                    if src_path in self.dir_table:
+                        cls = DirDeletedEvent
+                        self._dir_table_operation(OP_DIR_REMOVED, src_path)
+                    else:
+                        cls = FileDeletedEvent
+                    self.queue_event(cls(src_path))
+                # 被监控根目录删除事件
                 # DirDeletedEvent
                 elif winapi_event.is_removed_self:
                     self.queue_event(DirDeletedEvent(self.watch.path))
