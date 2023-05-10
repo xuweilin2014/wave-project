@@ -31,7 +31,7 @@ class FileSystemEvent:
         self._src_path = src_path
 
     @property
-    def src_path(self):
+    def src_path(self) -> str:
         """Source path of the file system object that triggered this event."""
         return self._src_path
 
@@ -158,7 +158,7 @@ class DirMovedEvent(FileSystemMovedEvent):
     is_directory = True
 
 
-class FileSystemEventHandler:
+class FileEventHandler:
     """
     Base file system event handler that you can override methods from.
     """
